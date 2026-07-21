@@ -541,17 +541,14 @@ fn parse_http_date(s: &str) -> Result<u64, ()> {
 /// `origin_host` (RFC 6265 §5.2/§5.3). With no Domain attribute the cookie is
 /// host-only: scoped to the exact origin host. A Domain attribute is honored
 /// only when it domain-matches the origin (equal to it or a parent domain) and
-/// is not an obvious public suffix; otherwise the attribute is ignored and the
-/// cookie is stored host-only on the origin. This is what stops a response from
-/// attacker.test planting a cookie scoped to victim.test.
+/// is not itself a public suffix (per Mozilla's Public Suffix List, via the
+/// `psl` crate); otherwise the attribute is ignored and the cookie is stored
+/// host-only on the origin. This is what stops a response from attacker.test
+/// planting a cookie scoped to victim.test, and a response from
+/// attacker.github.io scoping a cookie to all of github.io.
 ///
 /// Returns None only when the origin host itself is absent (the cookie cannot
 /// be scoped and is dropped).
-///
-/// Note: a full public suffix list is not bundled, so multi-label public
-/// suffixes (co.uk, github.io) are not rejected; the domain-match check still
-/// blocks the reported cross-domain attack, and single-label suffixes (com,
-/// local) are rejected.
 fn resolve_cookie_domain(origin_host: &str, domain_attr: Option<&str>) -> Option<(String, bool)> {
     let origin = origin_host.trim().trim_start_matches('.').to_lowercase();
     if origin.is_empty() {
@@ -564,7 +561,11 @@ fn resolve_cookie_domain(origin_host: &str, domain_attr: Option<&str>) -> Option
     if dom.is_empty() || dom == origin {
         return Some((origin, true));
     }
-    if dom.contains('.') && origin.ends_with(&format!(".{dom}")) {
+    // psl::domain_str returns None when `dom` has no registrable label beyond
+    // its public suffix, i.e. `dom` IS a public suffix (single-label "com" or
+    // multi-label "github.io"/"co.uk" alike).
+    let is_public_suffix = psl::domain_str(&dom).is_none();
+    if !is_public_suffix && origin.ends_with(&format!(".{dom}")) {
         Some((dom, false))
     } else {
         Some((origin, true))
@@ -1004,6 +1005,40 @@ mod tests {
         // "com" is a public suffix; the cookie must not be scoped to it.
         let other = Url::parse("http://other.com/").unwrap();
         assert!(!jar.get_cookie_header(&other).contains("bad=1"));
+    }
+
+    #[test]
+    fn multi_label_public_suffix_domain_attribute_is_ignored() {
+        // A response from attacker.github.io must not be able to scope a
+        // cookie to all of github.io (a shared-hosting public suffix), the
+        // same way a bare single-label suffix like "com" is already ignored.
+        let jar = CookieJar::new();
+        let attacker = Url::parse("http://attacker.github.io/").unwrap();
+        jar.set_cookie("sid=attacker; Domain=github.io; Path=/", &attacker);
+
+        let other_tenant = Url::parse("http://other-tenant.github.io/").unwrap();
+        assert!(
+            !jar.get_cookie_header(&other_tenant).contains("sid=attacker"),
+            "cookie scoped to shared public suffix leaked to another tenant: {}",
+            jar.get_cookie_header(&other_tenant)
+        );
+        // Downgraded to host-only on the attacker's own origin, matching how
+        // the single-label public-suffix case and cross-domain case behave.
+        assert!(jar.get_cookie_header(&attacker).contains("sid=attacker"));
+    }
+
+    #[test]
+    fn ordinary_two_label_domain_is_still_accepted() {
+        // example.com is not a public suffix; Domain=example.com from a
+        // subdomain must still be honored (no overreach from the PSL check).
+        let jar = CookieJar::new();
+        let www = Url::parse("http://www.example.com/").unwrap();
+        jar.set_cookie("sid=1; Domain=example.com; Path=/", &www);
+
+        let apex = Url::parse("http://example.com/").unwrap();
+        assert!(jar.get_cookie_header(&apex).contains("sid=1"));
+        let other_sub = Url::parse("http://other.example.com/").unwrap();
+        assert!(jar.get_cookie_header(&other_sub).contains("sid=1"));
     }
 
     #[test]
