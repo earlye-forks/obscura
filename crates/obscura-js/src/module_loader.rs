@@ -65,7 +65,18 @@ impl ModuleLoader for ObscuraModuleLoader {
         // plain Option<String> rather than borrowing &self across an `await`.
         let proxy_url = self.proxy_url.clone();
 
+        let specifier_for_check = module_specifier.clone();
+
         ModuleLoadResponse::Async(Pin::from(Box::new(async move {
+            // The SsrfGuardResolver on the shared client only catches a
+            // hostname that DNS-rebinds to a forbidden address; it is never
+            // consulted when the host is already a literal IP (hyper-util's
+            // connector skips DNS resolution entirely in that case). So
+            // module fetches need the same string-level check op_fetch_url
+            // already applies before ever handing the URL to the client.
+            crate::ops::validate_fetch_url(&specifier_for_check)
+                .map_err(|e| io_err(format!("Module {} blocked: {}", url, e)))?;
+
             // Reuse the process-wide cached client (same one op_fetch_url
             // uses). Modern SPAs dynamic-import 20-50 chunks per page; the
             // old code built a fresh reqwest::Client per import, each with
@@ -111,5 +122,58 @@ impl ModuleLoader for ObscuraModuleLoader {
                 None,
             ))
         })))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Regression test for the SSRF bypass via dynamic `import()` /
+    // `<script type="module">`: the module loader used to fetch module
+    // source directly with no URL validation, relying solely on the shared
+    // client's SsrfGuardResolver — which never fires for a literal IP host
+    // (hyper-util skips DNS resolution entirely when the host already parses
+    // as an IP). `load()` must reject loopback/link-local URLs itself,
+    // before any request is attempted.
+    async fn assert_blocked(url: &str) {
+        let loader = ObscuraModuleLoader::new("https://example.com/");
+        let specifier = ModuleSpecifier::parse(url).unwrap();
+        let response = loader.load(
+            &specifier,
+            None,
+            true,
+            RequestedModuleType::None,
+        );
+        let ModuleLoadResponse::Async(fut) = response else {
+            panic!("expected an async module load response");
+        };
+        let result = fut.await;
+        let err = result.expect_err(&format!(
+            "module import of {} must be rejected as SSRF, not fetched",
+            url
+        ));
+        let msg = err.to_string();
+        assert!(
+            msg.contains("blocked") || msg.contains("not allowed"),
+            "expected an SSRF-validation error for {}, got: {}",
+            url,
+            msg
+        );
+    }
+
+    #[tokio::test]
+    async fn dynamic_import_from_loopback_is_blocked() {
+        assert_blocked("http://127.0.0.1:6379/").await;
+    }
+
+    #[tokio::test]
+    async fn dynamic_import_from_link_local_metadata_is_blocked() {
+        assert_blocked("http://169.254.169.254/latest/meta-data/iam/security-credentials/").await;
+    }
+
+    #[tokio::test]
+    async fn dynamic_import_from_ipv6_loopback_is_blocked() {
+        assert_blocked("http://[::1]:6379/").await;
     }
 }

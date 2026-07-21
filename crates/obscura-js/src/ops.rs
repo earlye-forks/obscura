@@ -1306,7 +1306,7 @@ mod tests {
     }
 }
 
-fn validate_fetch_url(url: &url::Url) -> Result<(), String> {
+pub(crate) fn validate_fetch_url(url: &url::Url) -> Result<(), String> {
     let scheme = url.scheme();
     if scheme != "http" && scheme != "https" && scheme != "file" {
         return Err(format!(
