@@ -228,13 +228,38 @@ pub fn is_forbidden_ip(ip: IpAddr) -> bool {
     }
 }
 
-/// reqwest DNS resolver that performs the lookup and then rejects the whole
-/// request if ANY resolved address is in the SSRF deny-set. This closes the
-/// DNS-rebinding bypass a host-string check alone cannot: a public name that
-/// resolves to 127.0.0.1 / 169.254.169.254 / an RFC1918 address is blocked at
-/// connect time, using the very addresses reqwest will dial. When private
-/// access is permitted (`--allow-private-network` or
-/// `OBSCURA_ALLOW_PRIVATE_NETWORK`) the lookup passes through unfiltered.
+/// Looks up `host` and rejects the whole lookup if ANY resolved address is in
+/// the SSRF deny-set. This closes the DNS-rebinding bypass a host-string check
+/// alone cannot: a public name that resolves to 127.0.0.1 / 169.254.169.254 /
+/// an RFC1918 address is blocked at connect time, using the very addresses the
+/// HTTP client will dial. When private access is permitted
+/// (`--allow-private-network` or `OBSCURA_ALLOW_PRIVATE_NETWORK`) the lookup
+/// passes through unfiltered. Shared by the reqwest resolver (below) and the
+/// wreq stealth-client resolver (`wreq_client::WreqSsrfGuardResolver`) so the
+/// non-stealth and stealth HTTP backends can never disagree about which
+/// resolved address is forbidden (feature-003).
+pub(crate) async fn resolve_with_ssrf_guard(
+    host: &str,
+    allow_private: bool,
+) -> Result<Vec<SocketAddr>, String> {
+    let allow = allow_private || env_allows_private_network();
+    let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host, 0))
+        .await
+        .map_err(|e| e.to_string())?
+        .collect();
+    if !allow {
+        if let Some(bad) = addrs.iter().find(|sa| is_forbidden_ip(sa.ip())) {
+            return Err(format!(
+                "SSRF blocked: '{}' resolves to forbidden address {}",
+                host,
+                bad.ip()
+            ));
+        }
+    }
+    Ok(addrs)
+}
+
+/// reqwest DNS resolver built on `resolve_with_ssrf_guard`.
 pub struct SsrfGuardResolver {
     allow_private: bool,
 }
@@ -247,30 +272,18 @@ impl SsrfGuardResolver {
 
 impl Resolve for SsrfGuardResolver {
     fn resolve(&self, name: Name) -> Resolving {
-        let allow = self.allow_private || env_allows_private_network();
+        let allow_private = self.allow_private;
         let host = name.as_str().to_string();
         Box::pin(async move {
-            let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host.as_str(), 0))
+            resolve_with_ssrf_guard(&host, allow_private)
                 .await
-                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?
-                .collect();
-            if !allow {
-                if let Some(bad) = addrs.iter().find(|sa| is_forbidden_ip(sa.ip())) {
-                    return Err(format!(
-                        "SSRF blocked: '{}' resolves to forbidden address {}",
-                        host,
-                        bad.ip()
-                    )
-                    .into());
-                }
-            }
-            let iter: Addrs = Box::new(addrs.into_iter());
-            Ok(iter)
+                .map(|addrs| -> Addrs { Box::new(addrs.into_iter()) })
+                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })
         })
     }
 }
 
-fn validate_url(
+pub(crate) fn validate_url(
     url: &Url,
     allow_private_network: bool,
     allow_file_access: bool,
