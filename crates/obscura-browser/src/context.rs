@@ -15,13 +15,18 @@ pub struct BrowserContext {
     pub robots_cache: Arc<RobotsCache>,
     pub obey_robots: bool,
     pub stealth: bool,
-    /// When true, CDP-driven navigation to file:// URLs is permitted.
-    /// Default is false: a remote CDP client cannot point the browser
-    /// at /etc/shadow even if Obscura is running as a privileged user.
+    /// When true, navigation to file:// URLs is permitted. Default is false:
+    /// a remote CDP client, or a page's own `location.href`/link-click/form
+    /// navigation, cannot point the browser at /etc/shadow even if Obscura is
+    /// running as a privileged user. Enforced by `http_client` itself
+    /// (`ObscuraHttpClient::allow_file_access`, mirrored here at construction
+    /// time), so every navigation path — CDP `Page.navigate`, page-triggered
+    /// navigation, and redirect chains — is gated identically (feature-001).
     /// Flip on via `obscura serve --allow-file-access` for legitimate
     /// local-HTML testing workflows. The CLI's own `obscura fetch
-    /// file://...` path is unaffected because it does not go through
-    /// the CDP server.
+    /// file://...` path is unaffected because it always passes file access
+    /// through explicitly — it is the operator's own direct fetch target,
+    /// not a page-triggered navigation.
     pub allow_file_access: bool,
     pub storage_dir: Option<PathBuf>,
     /// When true, the http client allows fetching localhost / RFC1918 /
@@ -34,7 +39,7 @@ pub struct BrowserContext {
 
 impl BrowserContext {
     pub fn new(id: String) -> Self {
-        Self::_new_inner(id, None, false, None, None, false)
+        Self::_new_inner(id, None, false, None, None, false, false)
     }
 
     /// Create a BrowserContext with an optional storage directory.
@@ -44,7 +49,7 @@ impl BrowserContext {
         id: String,
         storage_dir: Option<PathBuf>,
     ) -> Self {
-        Self::_new_inner(id, None, false, None, storage_dir, false)
+        Self::_new_inner(id, None, false, None, storage_dir, false, false)
     }
 
     /// Create a BrowserContext with full options including storage_dir.
@@ -55,7 +60,7 @@ impl BrowserContext {
         user_agent: Option<String>,
         storage_dir: Option<PathBuf>,
     ) -> Self {
-        Self::_new_inner(id, proxy_url, stealth, user_agent, storage_dir, false)
+        Self::_new_inner(id, proxy_url, stealth, user_agent, storage_dir, false, false)
     }
 
     /// Variant that also accepts the `allow_private_network` opt-in. All
@@ -69,7 +74,28 @@ impl BrowserContext {
         storage_dir: Option<PathBuf>,
         allow_private_network: bool,
     ) -> Self {
-        Self::_new_inner(id, proxy_url, stealth, user_agent, storage_dir, allow_private_network)
+        Self::_new_inner(id, proxy_url, stealth, user_agent, storage_dir, allow_private_network, false)
+    }
+
+    /// Kitchen-sink constructor that also threads `allow_file_access` through
+    /// to the underlying `ObscuraHttpClient` (feature-001). Previously
+    /// `allow_file_access` was only ever set by mutating the field after
+    /// construction, which never reached the already-built `http_client` —
+    /// so the flag was consulted by the CDP command handlers but not by the
+    /// actual fetch path. Callers that need this knob (CDP server, CLI
+    /// `serve --allow-file-access`) must go through here instead.
+    pub fn with_storage_and_security(
+        id: String,
+        proxy_url: Option<String>,
+        stealth: bool,
+        user_agent: Option<String>,
+        storage_dir: Option<PathBuf>,
+        allow_private_network: bool,
+        allow_file_access: bool,
+    ) -> Self {
+        Self::_new_inner(
+            id, proxy_url, stealth, user_agent, storage_dir, allow_private_network, allow_file_access,
+        )
     }
 
     fn _new_inner(
@@ -79,6 +105,7 @@ impl BrowserContext {
         user_agent: Option<String>,
         storage_dir: Option<PathBuf>,
         allow_private_network: bool,
+        allow_file_access: bool,
     ) -> Self {
         let cookie_jar = Arc::new(CookieJar::new());
 
@@ -98,10 +125,11 @@ impl BrowserContext {
             }
         }
 
-        let mut client = ObscuraHttpClient::with_full_options(
+        let mut client = ObscuraHttpClient::with_security_options(
             cookie_jar.clone(),
             proxy_url.as_deref(),
             allow_private_network,
+            allow_file_access,
         );
         if stealth {
             client.block_trackers = true;
@@ -130,7 +158,7 @@ impl BrowserContext {
             robots_cache: Arc::new(RobotsCache::new()),
             obey_robots: false,
             stealth,
-            allow_file_access: false,
+            allow_file_access,
             storage_dir,
             allow_private_network,
         }
@@ -146,7 +174,7 @@ impl BrowserContext {
         stealth: bool,
         user_agent: Option<String>,
     ) -> Self {
-        Self::_new_inner(id, proxy_url, stealth, user_agent, None, false)
+        Self::_new_inner(id, proxy_url, stealth, user_agent, None, false, false)
     }
 
     pub fn with_proxy(id: String, proxy_url: Option<String>) -> Self {

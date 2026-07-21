@@ -270,7 +270,11 @@ impl Resolve for SsrfGuardResolver {
     }
 }
 
-fn validate_url(url: &Url, allow_private_network: bool) -> Result<(), ObscuraNetError> {
+fn validate_url(
+    url: &Url,
+    allow_private_network: bool,
+    allow_file_access: bool,
+) -> Result<(), ObscuraNetError> {
     let allow_private_network = allow_private_network || env_allows_private_network();
     let scheme = url.scheme();
     if scheme != "http" && scheme != "https" && scheme != "file" {
@@ -280,7 +284,17 @@ fn validate_url(url: &Url, allow_private_network: bool) -> Result<(), ObscuraNet
         )));
     }
 
-    if scheme == "file" || allow_private_network {
+    if scheme == "file" {
+        return if allow_file_access {
+            Ok(())
+        } else {
+            Err(ObscuraNetError::Network(
+                "Access to file:// URLs is not allowed (allow_file_access is disabled)".to_string(),
+            ))
+        };
+    }
+
+    if allow_private_network {
         return Ok(());
     }
 
@@ -370,6 +384,13 @@ pub struct ObscuraHttpClient {
     /// through in addition to the `OBSCURA_ALLOW_PRIVATE_NETWORK` env var.
     /// Set via `--allow-private-network` on the CLI (issue #33).
     pub allow_private_network: bool,
+    /// When true, `validate_url` lets `file://` URLs through. This is the sole
+    /// enforcement point for file-scheme access: every path that can trigger a
+    /// fetch (CDP `Page.navigate`, a page's own `location.href`/link-click/form
+    /// navigation, an HTTP redirect chain) routes through `fetch_with_method`,
+    /// so gating it here — rather than only in the CDP command handlers —
+    /// covers the plain library-embedding API too (feature-001).
+    pub allow_file_access: bool,
 }
 
 /// Derive the sec-ch-ua and sec-ch-ua-platform client-hint header values from a
@@ -430,6 +451,19 @@ impl ObscuraHttpClient {
         proxy_url: Option<&str>,
         allow_private_network: bool,
     ) -> Self {
+        Self::with_security_options(cookie_jar, proxy_url, allow_private_network, false)
+    }
+
+    /// Kitchen-sink constructor that also threads `allow_file_access`
+    /// (feature-001). Older `with_*` builders stay as-is, defaulting it to
+    /// `false`; callers that need to opt a context into `file://` access
+    /// (e.g. `obscura serve --allow-file-access`) go through here.
+    pub fn with_security_options(
+        cookie_jar: Arc<CookieJar>,
+        proxy_url: Option<&str>,
+        allow_private_network: bool,
+        allow_file_access: bool,
+    ) -> Self {
         ObscuraHttpClient {
             client: tokio::sync::OnceCell::new(),
             proxy_url: proxy_url.map(|s| s.to_string()),
@@ -443,6 +477,7 @@ impl ObscuraHttpClient {
             timeout: Duration::from_secs(30),
             block_trackers: false,
             allow_private_network,
+            allow_file_access,
         }
     }
 
@@ -511,7 +546,7 @@ impl ObscuraHttpClient {
         initial_body: Option<Vec<u8>>,
         callbacks: Option<&CallbackRegistry>,
     ) -> Result<Response, ObscuraNetError> {
-        validate_url(url, self.allow_private_network)?;
+        validate_url(url, self.allow_private_network, self.allow_file_access)?;
 
         if url.scheme() == "file" {
             return fetch_file_url(url).await;
@@ -682,7 +717,7 @@ impl ObscuraHttpClient {
                     let next_url = current_url.join(location_str).map_err(|e| {
                         ObscuraNetError::Network(format!("Invalid redirect URL: {}", e))
                     })?;
-                    validate_url(&next_url, self.allow_private_network)?;
+                    validate_url(&next_url, self.allow_private_network, self.allow_file_access)?;
                     redirects.push(current_url.clone());
                     current_url = next_url;
                     if status == reqwest::StatusCode::MOVED_PERMANENTLY
@@ -812,11 +847,21 @@ mod ssrf_tests {
     #[test]
     fn validate_url_blocks_unspecified_and_allows_public() {
         // 0.0.0.0 previously slipped through validate_url's literal-host check.
-        assert!(validate_url(&Url::parse("http://0.0.0.0:8080/").unwrap(), false).is_err());
-        assert!(validate_url(&Url::parse("http://127.0.0.1/").unwrap(), false).is_err());
-        assert!(validate_url(&Url::parse("http://example.com/").unwrap(), false).is_ok());
+        assert!(validate_url(&Url::parse("http://0.0.0.0:8080/").unwrap(), false, false).is_err());
+        assert!(validate_url(&Url::parse("http://127.0.0.1/").unwrap(), false, false).is_err());
+        assert!(validate_url(&Url::parse("http://example.com/").unwrap(), false, false).is_ok());
         // The allow flag bypasses the guard (local-dev escape hatch).
-        assert!(validate_url(&Url::parse("http://127.0.0.1/").unwrap(), true).is_ok());
+        assert!(validate_url(&Url::parse("http://127.0.0.1/").unwrap(), true, false).is_ok());
+    }
+
+    #[test]
+    fn validate_url_blocks_file_scheme_unless_allowed() {
+        // feature-001: file:// must be denied by default regardless of the
+        // allow_private_network flag, and only pass when allow_file_access is set.
+        let file_url = Url::parse("file:///etc/passwd").unwrap();
+        assert!(validate_url(&file_url, false, false).is_err());
+        assert!(validate_url(&file_url, true, false).is_err());
+        assert!(validate_url(&file_url, false, true).is_ok());
     }
 
     #[tokio::test]
