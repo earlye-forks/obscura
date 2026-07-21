@@ -1,3 +1,5 @@
+use std::cell::RefCell;
+use std::rc::{Rc, Weak};
 use std::time::Duration;
 
 use obscura_browser::lifecycle::WaitUntil;
@@ -17,13 +19,14 @@ fn nid_from_value(v: &Value) -> Option<u64> {
 
 /// A browser tab/page.
 pub struct Page {
-    pub(crate) inner: InnerPage,
+    pub(crate) inner: Rc<RefCell<InnerPage>>,
 }
 
 impl Page {
     /// Navigate to URL and wait for load.
     pub async fn goto(&mut self, url: &str) -> Result<(), Error> {
         self.inner
+            .borrow_mut()
             .navigate_with_wait(url, WaitUntil::Load)
             .await
             .map_err(|e| Error::Navigation(e.to_string()))
@@ -31,12 +34,12 @@ impl Page {
 
     /// Get current URL.
     pub fn url(&self) -> String {
-        self.inner.url_string()
+        self.inner.borrow().url_string()
     }
 
     /// Execute JS in the page.
     pub fn evaluate(&mut self, expression: &str) -> Value {
-        self.inner.evaluate(expression)
+        self.inner.borrow_mut().evaluate(expression)
     }
 
     /// Get page HTML content.
@@ -53,7 +56,7 @@ impl Page {
             escaped
         );
         let val = self.evaluate(&js);
-        nid_from_value(&val).map(|nid| Element { node_id: nid, page: self as *const Page })
+        nid_from_value(&val).map(|nid| Element { node_id: nid, page: Rc::downgrade(&self.inner) })
     }
 
     /// Wait for CSS selector to appear (polls every 100ms).
@@ -71,7 +74,7 @@ impl Page {
             );
             let val = self.evaluate(&js);
             if let Some(nid) = nid_from_value(&val) {
-                return Ok(Element { node_id: nid, page: self as *const Page });
+                return Ok(Element { node_id: nid, page: Rc::downgrade(&self.inner) });
             }
             if start.elapsed() > timeout {
                 return Err(Error::Timeout(format!(
@@ -90,7 +93,7 @@ impl Page {
     /// setTimeout, RxJS subscribers) to let the V8 event loop pump and
     /// resolve scheduled microtasks/macrotasks before the next `evaluate()`.
     pub async fn settle(&mut self, max_ms: u64) {
-        self.inner.settle(max_ms).await
+        self.inner.borrow_mut().settle(max_ms).await
     }
 
     /// Register a script that runs before any of the page's own `<script>` tags,
@@ -98,7 +101,7 @@ impl Page {
     /// `goto()` / navigation. Use it to install a fetch()/XHR interceptor or any
     /// other page-init logic before the page's bootstrap runs.
     pub fn add_preload_script(&mut self, script: &str) {
-        self.inner.add_preload_script(script);
+        self.inner.borrow_mut().add_preload_script(script);
     }
 
     /// Enable CDP-Fetch-style interception of every JS `fetch()`/XHR. Returns a
@@ -108,7 +111,7 @@ impl Page {
     pub fn enable_interception(
         &mut self,
     ) -> tokio::sync::mpsc::UnboundedReceiver<InterceptedRequest> {
-        self.inner.enable_interception()
+        self.inner.borrow_mut().enable_interception()
     }
 
     /// Register a passive callback fired for every request the page makes
@@ -116,7 +119,7 @@ impl Page {
     /// and before it is sent. Non-blocking; use `enable_interception` to mutate
     /// or block. Returns a stable id; pass it to `off_request` to detach.
     pub fn on_request(&mut self, cb: RequestCallback) -> u64 {
-        self.inner.on_request(cb)
+        self.inner.borrow_mut().on_request(cb)
     }
 
     /// Register a passive callback fired with every response the page receives
@@ -124,7 +127,7 @@ impl Page {
     /// main path for capturing API response payloads from SPAs. Returns a stable
     /// id; pass it to `off_response` to detach.
     pub fn on_response(&mut self, cb: ResponseCallback) -> u64 {
-        self.inner.on_response(cb)
+        self.inner.borrow_mut().on_response(cb)
     }
 
     /// Detach a request callback previously registered with `on_request`.
@@ -132,55 +135,57 @@ impl Page {
     /// scoped to this page — they never fire for sibling pages and are
     /// dropped with the page (issue #408).
     pub fn off_request(&mut self, id: u64) -> bool {
-        self.inner.off_request(id)
+        self.inner.borrow_mut().off_request(id)
     }
 
     /// Detach a response callback previously registered with `on_response`.
     /// Returns true if a callback with that id was removed.
     pub fn off_response(&mut self, id: u64) -> bool {
-        self.inner.off_response(id)
+        self.inner.borrow_mut().off_response(id)
     }
 }
 
 /// Handle to a DOM element.
 ///
-/// Created via [`Page::query_selector`] or [`Page::wait_for_selector`].
+/// Created via [`Page::query_selector`] or [`Page::wait_for_selector`]. Stays
+/// valid independently of whether the originating [`Page`] is later moved;
+/// becomes inert (returns [`Error::PageDropped`]) once the `Page` is dropped.
 pub struct Element {
     node_id: u64,
-    page: *const Page,
+    page: Weak<RefCell<InnerPage>>,
 }
 
 impl Element {
     /// Get text content of this element.
-    pub fn text(&self) -> String {
-        let page = unsafe { &mut *(self.page as *mut Page) };
-        let val = page.evaluate(&format!(
+    pub fn text(&self) -> Result<String, Error> {
+        let page = self.page.upgrade().ok_or(Error::PageDropped)?;
+        let val = page.borrow_mut().evaluate(&format!(
             "(function() {{ var el = globalThis._wrap && globalThis._wrap({}); return el ? el.textContent : ''; }})()",
             self.node_id
         ));
-        val.as_str().unwrap_or("").to_string()
+        Ok(val.as_str().unwrap_or("").to_string())
     }
 
     /// Get an attribute value.
-    pub fn attribute(&self, name: &str) -> Option<String> {
-        let page = unsafe { &mut *(self.page as *mut Page) };
-        let val = page.evaluate(&format!(
+    pub fn attribute(&self, name: &str) -> Result<Option<String>, Error> {
+        let page = self.page.upgrade().ok_or(Error::PageDropped)?;
+        let val = page.borrow_mut().evaluate(&format!(
             "(function() {{ var el = globalThis._wrap && globalThis._wrap({}); return el ? el.getAttribute('{}') : null; }})()",
             self.node_id, name
         ));
-        if val.is_null() { None } else { Some(val.as_str().unwrap_or("").to_string()) }
+        Ok(if val.is_null() { None } else { Some(val.as_str().unwrap_or("").to_string()) })
     }
 
     /// Click this element.
     pub fn click(&self) -> Result<(), Error> {
-        let page = unsafe { &mut *(self.page as *mut Page) };
+        let page = self.page.upgrade().ok_or(Error::PageDropped)?;
         // Scroll into view
-        page.evaluate(&format!(
+        page.borrow_mut().evaluate(&format!(
             "(function() {{ var el = globalThis._wrap && globalThis._wrap({}); if (el) el.scrollIntoView({{block:'center'}}); }})()",
             self.node_id
         ));
         // Click
-        let result = page.evaluate(&format!(
+        let result = page.borrow_mut().evaluate(&format!(
             "(function() {{ var el = globalThis._wrap && globalThis._wrap({}); if (el) {{ el.click(); return true; }} return false; }})()",
             self.node_id
         ));
