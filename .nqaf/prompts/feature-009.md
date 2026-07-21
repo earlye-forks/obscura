@@ -1,146 +1,56 @@
-# Security Policy
+# Docs: append the full security review to `SECURITY.md`
 
-The Obscura project takes security seriously. Obscura runs real, untrusted
-JavaScript from arbitrary web pages through V8, so we appreciate your efforts to
-responsibly disclose what you find and will work with you to address it.
+## Problem [feature-009]
 
-## Reporting a vulnerability
+Other changes already made to this fork point a reader at "the review" behind
+its fixes without that review actually being anywhere inside the fork:
 
-**Please do not report security issues through public GitHub issues, pull
-requests, or discussions.**
+- The README addition (from an earlier prompt) says this fork "carries a set
+  of security and correctness fixes... see the fork's NQAF prompt history."
+- The `SECURITY.md` "known issues not fixed in this fork" section (from
+  another earlier prompt) documents four findings left open by design, as a
+  summary — a reader who wants the full detail behind that summary (exact
+  file/line, exploit scenario, why it's scoped the way it is) has nowhere to
+  go for it.
 
-Report a vulnerability privately through GitHub: go to the repository's
-**Security** tab and click [**Report a vulnerability**](https://github.com/h4ckf0r0day/obscura/security/advisories/new)
-to open a private advisory.
+The actual review document that produced all of this fork's security fixes
+lives only in the separate repository that generates these prompts — it was
+never part of the fork's own tree. Once these prompts are applied to a fresh
+mirror of upstream, none of that source material travels with it. A reader
+of this fork's own `SECURITY.md`/README has real pointers to a review that,
+as far as the fork itself is concerned, doesn't exist.
 
-If you cannot use GitHub advisories, email **hello@obscura.sh** with "security"
-in the subject line.
+## Fix
 
-### What to include
+Append the full text of the review to the end of `SECURITY.md`, as a clearly
+delineated appendix, so the fork is self-contained: anyone reading it can find
+the complete rationale without needing access to any other repository.
 
-To help us triage quickly, please provide as much of the following as you can:
+Concretely:
 
-- Type of issue (SSRF, hang or crash / denial of service, memory safety,
-  cross-session data exposure, etc.).
-- The obscura version or commit, plus OS and architecture.
-- The location of the affected code (file path and commit, or a direct link).
-- Any special configuration or flags required to reproduce.
-- Step-by-step instructions: a page, `--eval` snippet, or CDP sequence that
-  triggers it.
-- Proof-of-concept code if you have it, and the impact you think it has.
+1. Add a new heading at the very end of `SECURITY.md` (after every other
+   section, including any "known issues not fixed in this fork" section added
+   by an earlier change): `## Appendix: Full Security Review`.
+2. Under that heading, append the review content given verbatim below, between
+   the `BEGIN APPENDIX CONTENT` / `END APPENDIX CONTENT` markers (the markers
+   themselves are not part of the content — do not include them in the
+   output), with exactly two textual adjustments made while copying it in:
+   - Drop the review's own top-level title line (`# Obscura Security
+     Review`) — it's redundant with the new `## Appendix: Full Security
+     Review` heading you just added.
+   - Demote every remaining heading in the appended content by one level
+     (`##` → `###`, `###` → `####`) so it nests correctly under the new `##`
+     appendix heading instead of competing with it or with `SECURITY.md`'s
+     own existing top-level sections.
+   Make no other wording changes — in particular, do not try to "fix" the
+   `../prompts/` path in the "Handoff to NQAF" section by pointing it at a
+   real path in this repo; that section is describing where the prompts live
+   in the review's *originating* repository, not this fork, and no such path
+   exists inside this fork's own tree. Leave it as descriptive history, not a
+   working link.
 
-## Our response
-
-We will send a response indicating the next steps in handling your report,
-normally within 3 business days. We will keep you informed of progress toward a
-fix, and may ask for additional information. We practice coordinated disclosure:
-please give us a reasonable window to ship a fix before any public writeup, and
-we will credit you in the advisory unless you ask us not to.
-
-If you do not receive an acknowledgement within 6 business days, please follow
-up by email to make sure we received the report.
-
-## Scope
-
-Obscura is a powerful tool for browser automation, scraping, and inspection. It
-is the responsibility of the calling code and the operator to use it safely. The
-security boundaries Obscura is meant to hold, and which are in scope:
-
-- **Egress / SSRF control.** Page content reaching loopback, RFC 1918, or
-  link-local addresses without `--allow-private-network` being set.
-- **Availability.** A page, script, or DOM structure that defeats the V8
-  termination watchdog, the CLI hard deadline, or the panic guards and so hangs
-  or aborts the process.
-- **Memory safety** in Obscura's own `unsafe` Rust or in an op that bridges JS
-  to Rust.
-- **Process and data integrity.** A page that escapes the intended op surface,
-  corrupts another page's state, or reads data across origins or sessions it
-  should not (cookies, storage, response bodies).
-- **TLS / identity correctness** issues that weaken or misrepresent a connection
-  in a way the user did not request.
-
-The following are **not** vulnerabilities. We welcome feedback on them as
-feature requests, but they will not be treated as security issues:
-
-- **Stealth / anti-fingerprinting behavior.** Presenting a normal, consistent
-  browser fingerprint is the intended, privacy-first design of stealth mode.
-  Requests to add detection-evasion for abusive purposes are out of scope.
-- **Anything behind an explicit opt-in,** such as reaching a private address
-  when `--allow-private-network` (or `OBSCURA_ALLOW_PRIVATE_NETWORK=1`) is set,
-  or behavior that requires local access to the machine running Obscura.
-- **Resource use from a page you chose to load** that stays within the watchdog
-  and deadline limits. Slow pages are not a vulnerability.
-- **Findings against the companion benchmark repo fixtures** rather than the
-  engine itself.
-
-## Third-party dependencies
-
-Report vulnerabilities in third-party crates to their respective maintainers (or
-the [RustSec advisory database](https://rustsec.org/)). The workspace is gated
-by `cargo deny` via `deny.toml`. If a dependency advisory affects Obscura's own
-behavior, let us know so we can pin or patch.
-
-## Security model and operator responsibilities
-
-Obscura executes untrusted page JavaScript **in process** through V8. Its
-in-process hardening reduces blast radius but is not a substitute for operating
-system isolation:
-
-- The **V8 termination watchdog** terminates the isolate from a separate thread
-  when synchronous script work overruns, because `tokio` timeouts only cancel at
-  await points.
-- The **CLI process-level hard deadline** is an absolute backstop for a hang
-  inside a Rust op that neither `tokio` nor `terminate_execution` can interrupt.
-- **Panic safety:** ops are wrapped so a panic degrades to a null result instead
-  of aborting the process inside V8's FFI frame; `panic = "unwind"` is pinned in
-  the release profile.
-- The **default network egress policy** blocks private and loopback ranges.
-
-These measures protect availability and limit egress. They do **not** claim to
-contain a hostile page that achieves native code execution through a V8 exploit.
-If you run Obscura against untrusted or adversarial input at scale, run it under
-OS-level isolation (a container or VM) with a restricted network, the same way
-you would run headless Chrome. Per-user container isolation is planned for the
-hosted service so that one session cannot affect another.
-
-## Known issues not fixed in this fork
-
-An ad hoc security review of this fork surfaced the findings below. They are
-real gaps in the upstream code, but this fork does not fix them, because this
-fork embeds only the `obscura` library crate directly as a dependency. It does
-not compile in or run `obscura-cli`, `obscura serve` (the CDP server),
-`obscura mcp` (the MCP server), or the project's published Docker image, so
-none of the code these findings live in is part of this fork's build or
-runtime.
-
-1. **CDP WebSocket server has no Origin/Host validation.** Any page open in a
-   normal browser tab can open a WebSocket connection to `obscura serve` and
-   issue arbitrary CDP commands, which amounts to a full remote-control
-   takeover. Lives entirely in `crates/obscura-cdp`.
-2. **MCP HTTP server defaults to open CORS with no authentication.** Lives
-   entirely in `crates/obscura-mcp`.
-3. **CDP page/session IDs are sequential rather than random**, which compounds
-   finding 1 by making valid session IDs guessable once an attacker has any
-   way to reach the server at all. Lives in `crates/obscura-cdp`.
-4. **The published Docker image runs as root by default.** This matters only
-   to whoever runs that container image directly.
-
-Because this fork has no dependency on `obscura-cdp` or `obscura-mcp` and does
-not run the published Docker image, none of this code compiles into or ships
-with this fork's actual use of the project, and these gaps are not reachable
-in this configuration.
-
-**This reasoning does not extend to anyone who *does* use `obscura serve`,
-`obscura mcp`, `obscura-cli`, or the published Docker image.** For those
-consumption paths, all four gaps above are real, unmitigated, and this fork
-has made no changes to address them.
-
-## Supported versions
-
-Security fixes land on `main` and ship in the next release. Please test reports
-against the latest release or `main`.
-
-## Appendix: Full Security Review
+```
+BEGIN APPENDIX CONTENT
 
 Tracking doc for an ad hoc security review of https://github.com/h4ckf0r0day/obscura
 (this fork). Findings come from a set of parallel focused code reviews, cross-checked
@@ -148,14 +58,14 @@ against the project's own `SECURITY.md` threat model. This file was the running 
 used to go through findings one at a time instead of all at once while the fixes below
 were being scoped and implemented.
 
-### Your use case (scopes everything below)
+## Your use case (scopes everything below)
 
 You're embedding the `obscura` library crate directly inside your own Rust process to
 drive deterministic website automation. You are **not** running `obscura serve` (the
 CDP server) or `obscura mcp` (the MCP server) — those are separate binaries/subcommands
 of `obscura-cli`. This matters a lot for prioritization, see below.
 
-#### What is CDP?
+### What is CDP?
 
 CDP (Chrome DevTools Protocol) is the JSON-RPC-over-WebSocket protocol Chrome/Chromium
 expose for remote control: DevTools itself, Puppeteer, Playwright, and Lighthouse all
@@ -164,7 +74,7 @@ intercept network traffic, take screenshots, etc. Obscura implements a CDP-compa
 server (`obscura serve`, `crates/obscura-cdp`) so existing Puppeteer/Playwright code can
 point at it as a drop-in replacement for headless Chrome.
 
-#### Can CDP / MCP be disabled or left out?
+### Can CDP / MCP be disabled or left out?
 
 Better than disabled — **left out entirely at compile time**, and this happens
 automatically with how you're using it:
@@ -189,14 +99,14 @@ binary at all.** Those findings are marked "not applicable to your use case" rat
 than deleted, in case that changes later (e.g. if you ever add a debug/inspection
 server for your own tooling).
 
-#### Findings status legend
+### Findings status legend
 
 - **Applies** — reachable through the plain `obscura` library API, relevant to you.
 - **N/A (CDP/MCP-only)** — lives entirely in code you don't compile in.
 - **Applies if `stealth` feature enabled** — only matters if you turn on the `stealth`
   Cargo feature / `--stealth` equivalent in the embedding API.
 
-### Unsafe block inventory
+## Unsafe block inventory
 
 Scoped to what actually ships in your binary: excludes `obscura-cli`, `obscura-cdp`,
 `obscura-mcp` (all N/A per the compile-time boundary above). That leaves **6 `unsafe`
@@ -204,7 +114,7 @@ blocks total**, all reachable from the plain `obscura` embedding API (3 directly
 `obscura`, 3 transitively via `obscura-dom`). Nothing in `obscura-browser`, `obscura-js`,
 or `obscura-net` uses `unsafe` at all.
 
-#### U1: `crates/obscura/src/page.rs:156` — `Element::text()`
+### U1: `crates/obscura/src/page.rs:156` — `Element::text()`
 ```rust
 let page = unsafe { &mut *(self.page as *mut Page) };
 ```
@@ -256,7 +166,7 @@ in a scratch test) before implementing — if it somehow already compiles, use
 `std::sync::Mutex` here since some `Page` methods `.await` while presumably needing the
 lock held).
 
-#### U2: `crates/obscura/src/page.rs:166` — `Element::attribute()`
+### U2: `crates/obscura/src/page.rs:166` — `Element::attribute()`
 ```rust
 let page = unsafe { &mut *(self.page as *mut Page) };
 ```
@@ -264,13 +174,13 @@ Same root cause and same fix as `text()` above — this is the same pattern repe
 per-method, so a single `Element`/`Page` restructuring (`Weak<RefCell<InnerPage>>`)
 fixes all three call sites at once.
 
-#### U3: `crates/obscura/src/page.rs:176` — `Element::click()`
+### U3: `crates/obscura/src/page.rs:176` — `Element::click()`
 ```rust
 let page = unsafe { &mut *(self.page as *mut Page) };
 ```
 Same root cause and same fix as `text()`/`attribute()`.
 
-#### U4: `crates/obscura-dom/src/tree_sink.rs:18` — `ObscuraElemName::fmt` (Debug)
+### U4: `crates/obscura-dom/src/tree_sink.rs:18` — `ObscuraElemName::fmt` (Debug)
 ```rust
 let name = unsafe { &*self.name };
 ```
@@ -289,14 +199,14 @@ None => panic!() })`, producing a `Ref<'a, QualName>`. Store that directly as
 No raw pointer, no type erasure — `Ref::map` already exists precisely for "borrow a
 sub-field and keep the runtime borrow-check alive" and is fully safe.
 
-#### U5: `crates/obscura-dom/src/tree_sink.rs:25` — `ObscuraElemName::ns()`
+### U5: `crates/obscura-dom/src/tree_sink.rs:25` — `ObscuraElemName::ns()`
 ```rust
 unsafe { &(*self.name).ns }
 ```
 Same root cause and same `Ref::map`-based fix as line 18 — one struct change
 (`name: Ref<'a, QualName>`) removes all three unsafe blocks in this file together.
 
-#### U6: `crates/obscura-dom/src/tree_sink.rs:29` — `ObscuraElemName::local_name()`
+### U6: `crates/obscura-dom/src/tree_sink.rs:29` — `ObscuraElemName::local_name()`
 ```rust
 unsafe { &(*self.name).local }
 ```
@@ -308,14 +218,14 @@ in `obscura-dom/src/tree_sink.rs` (raw pointer → `Ref<'a, QualName>`) — elim
 all 6 blocks that matter to your use case. Neither requires touching `obscura-browser`,
 `obscura-js`, `obscura-net`, or any FFI/V8 boundary.
 
-### Findings
+## Findings
 
-#### 1. CDP WebSocket has no Origin/Host validation
+### 1. CDP WebSocket has no Origin/Host validation
 **Severity as originally scoped:** Critical. **Applicability: N/A (CDP-only).**
 `crates/obscura-cdp/src/server.rs:960-984`. Not reachable — no `obscura-cdp` in your
 dependency graph.
 
-#### 2. `--stealth` mode has zero SSRF validation on navigation
+### 2. `--stealth` mode has zero SSRF validation on navigation
 **Severity: Critical if applicable. Applicability: Applies if `stealth` feature enabled.**
 `crates/obscura-browser/src/page.rs:274-282`, `crates/obscura-net/src/wreq_client.rs:76-155`.
 The stealth navigation path uses a separate HTTP client (`wreq`) that skips the SSRF
@@ -326,7 +236,7 @@ response comes back, with no `--allow-private-network`-equivalent opt-in require
 load-bearing part of this project, so this needed to be fixed as a first-class path, not
 left as an optional-feature gap.
 
-#### 3. Dynamic `import()` / `<script type=module>` bypasses SSRF protection
+### 3. Dynamic `import()` / `<script type=module>` bypasses SSRF protection
 **Severity: Critical. Applicability: Applies.**
 `crates/obscura-js/src/module_loader.rs:56-114`. This is in `obscura-js`, a dependency
 of `obscura-browser`, so it's reachable regardless of CDP/MCP/stealth. The custom DNS
@@ -338,7 +248,7 @@ before fetching. A page you automate can do
 `<script type="module" src="http://169.254.169.254/...">` and reach internal/loopback
 services directly.
 
-#### 4. JS-triggered navigation bypasses local-file-read protection entirely
+### 4. JS-triggered navigation bypasses local-file-read protection entirely
 **Severity: Critical. Applicability: Applies — and more relevant to your use case than
 originally scoped.**
 `crates/obscura-net/src/client.rs:273-285` (`validate_url`) lets `file://` through
@@ -361,17 +271,17 @@ deterministic automation) since it needs no CDP, no MCP, and no special access �
 link or a redirect on a page you visit. **Confirmed relevant to this deployment** — this
 automation does need to follow links/redirects on untrusted pages. **Top priority.**
 
-#### 5. MCP HTTP server defaults to open CORS + no auth
+### 5. MCP HTTP server defaults to open CORS + no auth
 **Severity as originally scoped:** High. **Applicability: N/A (MCP-only).**
 `crates/obscura-mcp/src/http.rs`. Not reachable — no `obscura-mcp` in your dependency
 graph.
 
-#### 6. `--stealth` `fetch()`/XHR SSRF check is literal-string only (no DNS resolution)
+### 6. `--stealth` `fetch()`/XHR SSRF check is literal-string only (no DNS resolution)
 **Severity: High. Applicability: Applies — confirmed, same as #2.**
 Same stealth code path as #2; vulnerable to DNS rebinding via a non-IP hostname that
 resolves to a private address.
 
-#### 7. Unbounded `crypto.subtle.deriveBits` iterations can hang script execution indefinitely
+### 7. Unbounded `crypto.subtle.deriveBits` iterations can hang script execution indefinitely
 **Severity: Medium-High. Applicability: Applies (re-scoped from "wedges the whole CDP
 server" to "hangs your automation's page evaluation").**
 `op_subtle_pbkdf2` (`crates/obscura-js/src/ops.rs:1604-1623`) takes `iterations: u32`
@@ -388,7 +298,7 @@ executor at await points. A page doing
 can hang the automation process for the full duration of ~4.3B HMAC iterations,
 regardless of any deadline configured.
 
-#### 8. Cookie `Domain` matching has no public-suffix list
+### 8. Cookie `Domain` matching has no public-suffix list
 **Severity: Medium. Applicability: Applies.**
 `crates/obscura-net/src/cookies.rs:555-572` (`resolve_cookie_domain`). A response from
 `attacker.github.io` (or any multi-label public suffix not covered without a bundled
@@ -397,7 +307,7 @@ PSL — `herokuapp.com`, `vercel.app`, `co.uk`, etc.) can set a cookie scoped to
 automation visits. Relevant if your automation ever crosses shared-hosting domains and
 carries cookies between them.
 
-#### 9. Only 4 of 22 JS ops are panic-guarded; `SECURITY.md`'s "every op is panic-safe" claim doesn't hold
+### 9. Only 4 of 22 JS ops are panic-guarded; `SECURITY.md`'s "every op is panic-safe" claim doesn't hold
 **Severity: Medium (latent). Applicability: Applies.**
 `crates/obscura-js/src/ops.rs` — `catch_unwind` wraps `op_dom`, `op_url_parse`,
 `op_url_set`, `op_url_resolve` only. No live panic was found reachable today (key/IV/
@@ -406,7 +316,7 @@ length validation is explicit elsewhere), but nothing structurally prevents a fu
 panic that aborts the process instead of degrading gracefully, since `panic = "unwind"`
 is what makes the wrapped ops safe and the unwrapped ones have no backstop.
 
-#### 10. Unbounded native heap allocation from JS-controlled length
+### 10. Unbounded native heap allocation from JS-controlled length
 **Severity: Medium. Applicability: Applies.**
 `op_subtle_pbkdf2`/`op_subtle_hkdf` (`ops.rs:1606-1654`): `vec![0u8; length as usize]`
 where `length` comes straight from `crypto.subtle.deriveBits(algorithm, key, length)`
@@ -415,7 +325,7 @@ with no cap (contrast `getRandomValues`, capped at 65536 bytes in `bootstrap.js`
 allocation at that size aborts the process via Rust's allocator-OOM path, which is not
 catchable by any `catch_unwind`.
 
-#### 11. Use-after-free / aliasing UB in the public `obscura::Element` API
+### 11. Use-after-free / aliasing UB in the public `obscura::Element` API
 **Severity: Medium-High. Applicability: Applies directly — this is the exact API
 surface being embedded. Same underlying bug as U1–U3 in the Unsafe Block Inventory
 above — fixing U1–U3 (the `Weak<RefCell<InnerPage>>` design) resolves this finding
@@ -436,10 +346,10 @@ while the caller can simultaneously hold the original `&mut Page`/owned `Page`, 
 have two live mutable references to the same object, which is UB per Rust's aliasing
 rules even without a use-after-free.
 
-#### 12. CDP page/session IDs are sequential, not random
+### 12. CDP page/session IDs are sequential, not random
 **Severity as originally scoped:** Medium (compounds #1). **Applicability: N/A (CDP-only).**
 
-#### 13. Undocumented/fragile `unsafe` in `obscura-dom/src/tree_sink.rs`
+### 13. Undocumented/fragile `unsafe` in `obscura-dom/src/tree_sink.rs`
 **Severity: Low. Applicability: Applies (obscura-dom is a transitive dependency via
 obscura-browser). Same underlying code as U4–U6 in the Unsafe Block Inventory above —
 fixing U4–U6 (the `Ref::map`-based design) resolves this finding directly.**
@@ -447,17 +357,17 @@ Lines 18/25/29 hold a raw pointer into an arena `Vec` guarded by a `RefCell` bor
 would panic (not silently corrupt) if violated. No confirmed exploit path found; no
 `SAFETY` comments either.
 
-#### 14. `SECURITY.md` claims a `cargo-deny`/`deny.toml` gate that doesn't exist
+### 14. `SECURITY.md` claims a `cargo-deny`/`deny.toml` gate that doesn't exist
 **Severity: Low.** Documentation/process gap, not a code vulnerability — flagged for
 awareness since consumers rely on this fork's stated posture. No `deny.toml` existed in
 the repo at the time of this finding; dependency versions themselves were current and
 clean (rustls 0.23, no git-sourced deps).
 
-#### 15. Docker image runs as root by default
+### 15. Docker image runs as root by default
 **Severity: Low. Applicability: N/A unless you use the published Docker image** (this
 use case embeds the library, not running the container).
 
-### Resolution
+## Resolution
 
 Findings #2–#4, #6–#11, #13, and #14 were turned into NQAF ("not-quite-a-fork")
 prompts — self-contained instructions for re-implementing each fix against a fresh
@@ -466,3 +376,16 @@ repository (external to this fork's own tree, not reproduced here). Findings #1,
 #12, and #15 got no independent code-fix prompt: they're not applicable to this
 project's embedding-only use case (CDP/MCP code isn't compiled in; the Docker image
 isn't run), a fact recorded elsewhere in this document rather than fixed in code.
+
+END APPENDIX CONTENT
+```
+
+## Why this matters
+
+A fork whose own documentation asserts "see the review" and "see the fixes'
+rationale" without either being reachable from inside the fork forces every
+future reader — including a future maintainer of this same fork who wasn't
+present for the original review — to go find and trust an external repository
+just to understand why the fork's `SECURITY.md` says what it says. Making the
+fork self-contained means its security posture can be understood, audited, and
+trusted from the fork alone.

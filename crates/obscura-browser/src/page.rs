@@ -222,6 +222,7 @@ impl Page {
             Some(Arc::new(StealthHttpClient::with_proxy(
                 context.cookie_jar.clone(),
                 context.proxy_url.as_deref(),
+                context.allow_private_network,
             )))
         } else {
             None
@@ -1757,7 +1758,7 @@ fn url_matches_cdp_pattern(pattern: &str, url: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{truncate_on_char_boundary, url_matches_cdp_pattern};
+    use super::{truncate_on_char_boundary, url_matches_cdp_pattern, Page};
 
     #[test]
     fn truncate_never_splits_a_multibyte_char() {
@@ -1793,6 +1794,58 @@ mod tests {
             "*://*.gstatic.com/*.woff2",
             "https://fonts.gstatic.com/s/inter/v18/font.woff",
         ));
+    }
+
+    // feature-001: a page's own `location.href` assignment queues a pending
+    // navigation that is later drained by `process_pending_navigation` and
+    // fetched directly against the http client — a path a CDP `Page.navigate`
+    // command never touches. `allow_file_access` must gate that path too, not
+    // just the CDP command handlers.
+    #[tokio::test(flavor = "current_thread")]
+    async fn page_triggered_navigation_to_file_url_is_blocked_by_default() {
+        let context = std::sync::Arc::new(crate::context::BrowserContext::with_storage_and_security(
+            "test".to_string(),
+            None,
+            false,
+            None,
+            None,
+            false,
+            false, // allow_file_access: default, disabled
+        ));
+        let mut page = Page::new("page-1".to_string(), context);
+        page.navigate("data:text/html,<html></html>").await.unwrap();
+        // A leading `const` forces the multi-statement wrapper (see
+        // `wrap_expression` in obscura-js), so the assignment actually runs as a
+        // statement rather than being folded into a single-expression `return (...)`.
+        page.evaluate("const _n = 0; location.href = 'file:///etc/passwd'; return location.href;");
+        let result = page.process_pending_navigation().await;
+        assert!(
+            result.is_err(),
+            "page-triggered navigation to file:// must be rejected when allow_file_access is disabled"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn page_triggered_navigation_to_file_url_succeeds_when_allowed() {
+        let context = std::sync::Arc::new(crate::context::BrowserContext::with_storage_and_security(
+            "test".to_string(),
+            None,
+            false,
+            None,
+            None,
+            false,
+            true, // allow_file_access: explicitly opted in
+        ));
+        let mut page = Page::new("page-1".to_string(), context);
+        page.navigate("data:text/html,<html></html>").await.unwrap();
+        page.evaluate("const _n = 0; location.href = 'file:///etc/hosts'; return location.href;");
+        let result = page.process_pending_navigation().await;
+        assert_eq!(
+            result.expect("page-triggered navigation to file:// must succeed when allow_file_access is enabled"),
+            true,
+            "expected a pending navigation to actually be processed",
+        );
+        assert_eq!(page.url.as_ref().map(|u| u.as_str()), Some("file:///etc/hosts"));
     }
 }
 

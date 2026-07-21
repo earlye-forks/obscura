@@ -582,13 +582,18 @@ async fn run_fetch(
         return Ok(());
     }
 
-    let context = Arc::new(BrowserContext::with_storage_and_network(
+    // `obscura fetch` takes its target URL directly from the CLI operator, not
+    // from an untrusted page, so file:// access stays unconditional here (as it
+    // always has been) rather than gated behind `--allow-file-access`, which is
+    // scoped to `serve`'s CDP-driven, page-triggered navigation.
+    let context = Arc::new(BrowserContext::with_storage_and_security(
         "fetch".to_string(),
         proxy,
         stealth,
         user_agent.clone(),
         storage_dir.clone(),
         allow_private_network,
+        true,
     ));
     let mut page = Page::new("fetch-page".to_string(), context.clone());
 
@@ -698,9 +703,13 @@ async fn fetch_original_response(
     let url = url::Url::parse(url_str)
         .map_err(|e| anyhow::anyhow!("Invalid URL '{}': {}", url_str, e))?;
 
-    let client = obscura_net::ObscuraHttpClient::with_options(
+    // Same rationale as `run_fetch`: this is the CLI operator's own direct
+    // fetch target, not a page-triggered navigation, so file:// stays allowed.
+    let client = obscura_net::ObscuraHttpClient::with_security_options(
         Arc::new(obscura_net::CookieJar::new()),
         proxy.as_deref(),
+        false,
+        true,
     );
     if let Some(ua) = user_agent {
         client.set_user_agent(&ua).await;

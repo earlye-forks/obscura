@@ -17,6 +17,9 @@ pub enum Error {
     #[error("no page session")]
     NoPage,
 
+    #[error("page was dropped")]
+    PageDropped,
+
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }

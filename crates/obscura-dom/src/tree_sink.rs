@@ -9,24 +9,22 @@ use html5ever::{Attribute as HtmlAttribute, LocalName, Namespace, QualName};
 use crate::tree::{Attribute, DomTree, NodeData, NodeId};
 
 pub struct ObscuraElemName<'a> {
-    _ref: Ref<'a, ()>,
-    name: *const QualName,
+    name: Ref<'a, QualName>,
 }
 
 impl<'a> fmt::Debug for ObscuraElemName<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let name = unsafe { &*self.name };
-        write!(f, "{:?}", name)
+        write!(f, "{:?}", &*self.name)
     }
 }
 
 impl<'a> ElemName for ObscuraElemName<'a> {
     fn ns(&self) -> &Namespace {
-        unsafe { &(*self.name).ns }
+        &self.name.ns
     }
 
     fn local_name(&self) -> &LocalName {
-        unsafe { &(*self.name).local }
+        &self.name.local
     }
 }
 
@@ -47,18 +45,16 @@ impl TreeSink for DomTree {
 
     fn elem_name<'a>(&'a self, target: &'a NodeId) -> ObscuraElemName<'a> {
         let borrow = self.borrow_inner();
-        let node = borrow.nodes.get(target.index())
-            .and_then(|n| n.as_ref())
-            .expect("elem_name called on invalid node");
-        let name_ptr: *const QualName = match &node.data {
-            NodeData::Element { name, .. } => name as *const QualName,
-            _ => panic!("elem_name called on non-element"),
-        };
-        let ref_guard = Ref::map(borrow, |_| &());
-        ObscuraElemName {
-            _ref: ref_guard,
-            name: name_ptr,
-        }
+        let name = Ref::map(borrow, |borrow| {
+            let node = borrow.nodes.get(target.index())
+                .and_then(|n| n.as_ref())
+                .expect("elem_name called on invalid node");
+            match &node.data {
+                NodeData::Element { name, .. } => name,
+                _ => panic!("elem_name called on non-element"),
+            }
+        });
+        ObscuraElemName { name }
     }
 
     fn create_element(
