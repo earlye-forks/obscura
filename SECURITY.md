@@ -103,6 +103,38 @@ OS-level isolation (a container or VM) with a restricted network, the same way
 you would run headless Chrome. Per-user container isolation is planned for the
 hosted service so that one session cannot affect another.
 
+## Known issues not fixed in this fork
+
+An ad hoc security review of this fork surfaced the findings below. They are
+real gaps in the upstream code, but this fork does not fix them, because this
+fork embeds only the `obscura` library crate directly as a dependency. It does
+not compile in or run `obscura-cli`, `obscura serve` (the CDP server),
+`obscura mcp` (the MCP server), or the project's published Docker image, so
+none of the code these findings live in is part of this fork's build or
+runtime.
+
+1. **CDP WebSocket server has no Origin/Host validation.** Any page open in a
+   normal browser tab can open a WebSocket connection to `obscura serve` and
+   issue arbitrary CDP commands, which amounts to a full remote-control
+   takeover. Lives entirely in `crates/obscura-cdp`.
+2. **MCP HTTP server defaults to open CORS with no authentication.** Lives
+   entirely in `crates/obscura-mcp`.
+3. **CDP page/session IDs are sequential rather than random**, which compounds
+   finding 1 by making valid session IDs guessable once an attacker has any
+   way to reach the server at all. Lives in `crates/obscura-cdp`.
+4. **The published Docker image runs as root by default.** This matters only
+   to whoever runs that container image directly.
+
+Because this fork has no dependency on `obscura-cdp` or `obscura-mcp` and does
+not run the published Docker image, none of this code compiles into or ships
+with this fork's actual use of the project, and these gaps are not reachable
+in this configuration.
+
+**This reasoning does not extend to anyone who *does* use `obscura serve`,
+`obscura mcp`, `obscura-cli`, or the published Docker image.** For those
+consumption paths, all four gaps above are real, unmitigated, and this fork
+has made no changes to address them.
+
 ## Supported versions
 
 Security fixes land on `main` and ship in the next release. Please test reports
