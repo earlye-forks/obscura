@@ -37,6 +37,12 @@ impl Page {
         self.inner.borrow().url_string()
     }
 
+    /// Stable identifier for this page/tab (Chromium's CDP `targetId`; the main
+    /// frame's `frameId` equals it — see `obscura-browser`'s `Page::new`).
+    pub fn id(&self) -> String {
+        self.inner.borrow().id.clone()
+    }
+
     /// Execute JS in the page.
     pub fn evaluate(&mut self, expression: &str) -> Value {
         self.inner.borrow_mut().evaluate(expression)
