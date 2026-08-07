@@ -8,6 +8,7 @@ use deno_core::OpState;
 use deno_core::Extension;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use obscura_dom::{DomTree, NodeData, NodeId};
+use crate::telemetry::{emit_dom_event, TelemetryDomEvent};
 use obscura_net::{CallbackRegistry, CookieJar, ObscuraHttpClient, RequestInfo, ResourceType, Response};
 #[cfg(feature = "stealth")]
 use obscura_net::StealthHttpClient;
@@ -319,6 +320,7 @@ fn op_dom_inner(state: &OpState, cmd: String, arg1: String, arg2: String) -> Str
                 } else {
                     dom.with_node_mut(node_id, |n| n.set_attribute(name, value.to_string()));
                 }
+                emit_dom_event(TelemetryDomEvent::AttributeChanged { node_id: nid, name: name.to_string() });
             }
             "true".into()
         }
@@ -337,17 +339,21 @@ fn op_dom_inner(state: &OpState, cmd: String, arg1: String, arg2: String) -> Str
             let parent = match arg1.parse::<u32>() { Ok(n) => n, Err(_) => return "false".into() };
             let child = match arg2.parse::<u32>() { Ok(n) => n, Err(_) => return "false".into() };
             dom.append_child(NodeId::new(parent), NodeId::new(child));
+            emit_dom_event(TelemetryDomEvent::NodeInserted { node_id: child, parent_id: parent });
             "true".into()
         }
         "remove_child" => {
             let child = match arg1.parse::<u32>() { Ok(n) => n, Err(_) => return "false".into() };
             dom.remove_child(NodeId::new(child));
+            emit_dom_event(TelemetryDomEvent::NodeRemoved { node_id: child });
             "true".into()
         }
         "insert_before" => {
             let new_node = match arg1.parse::<u32>() { Ok(n) => n, Err(_) => return "false".into() };
             let ref_node = match arg2.parse::<u32>() { Ok(n) => n, Err(_) => return "false".into() };
+            let parent_id = dom.with_node(NodeId::new(ref_node), |n| n.parent).flatten().map(|p| p.index() as u32).unwrap_or(0);
             dom.insert_before(NodeId::new(ref_node), NodeId::new(new_node));
+            emit_dom_event(TelemetryDomEvent::NodeInserted { node_id: new_node, parent_id });
             "true".into()
         }
         "remove_attribute" => {
@@ -357,6 +363,7 @@ fn op_dom_inner(state: &OpState, cmd: String, arg1: String, arg2: String) -> Str
                     attrs.retain(|a| a.name.local.as_ref() != arg2.as_str());
                 }
             });
+            emit_dom_event(TelemetryDomEvent::AttributeChanged { node_id: nid, name: arg2.clone() });
             "true".into()
         }
         "set_inner_html" => {

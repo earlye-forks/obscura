@@ -24,6 +24,34 @@ Obscura is a headless browser engine written in Rust, built for web scraping and
 
 This repository is a fork of [h4ckf0r0day/obscura](https://github.com/h4ckf0r0day/obscura). It carries a set of security and correctness fixes applied on top of upstream, tracked as prompts rather than as a diverging code history. Anyone re-mirroring this fork from a newer upstream release should look at the fork's NQAF prompt history to see which fixes to reapply.
 
+### Fork Features
+
+In addition to upstream fixes, this fork adds capabilities for the automation engine that embeds it.
+
+#### DOM change telemetry stream
+
+`op_dom`'s structural mutation commands (`append_child`, `remove_child`, `insert_before`, `set_attribute`, `remove_attribute`, ...) run on V8's thread-local, `!Send` engine loop, so they can't hand a closure or pointer to a consumer on another thread. Instead, each mutation pushes a lightweight `TelemetryDomEvent` (an atomic node ID plus, for attribute changes, the attribute name — never node content) into a process-wide unbounded `tokio::sync::mpsc` queue, so emitting one costs nothing measurable on the hot DOM path and never blocks the engine loop.
+
+A companion Rust process consumes the stream with `obscura::subscribe_dom_changes()`, which returns the receiver on the first call only (the channel is single-consumer):
+
+```rust
+use obscura::{Browser, TelemetryDomEvent};
+
+let mut events = obscura::subscribe_dom_changes().expect("dom telemetry already subscribed");
+
+std::thread::spawn(move || {
+    while let Some(event) = events.blocking_recv() {
+        match event {
+            TelemetryDomEvent::NodeInserted { node_id, parent_id } => { /* ... */ }
+            TelemetryDomEvent::NodeRemoved { node_id } => { /* ... */ }
+            TelemetryDomEvent::AttributeChanged { node_id, name } => { /* ... */ }
+        }
+    }
+});
+```
+
+See `crates/obscura/examples/dom_telemetry.rs` for a runnable end-to-end example.
+
 ### Why Obscura over headless Chrome?
 
 Designed for automation at scale, not desktop browsing.

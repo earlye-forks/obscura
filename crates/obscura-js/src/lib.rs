@@ -5,6 +5,7 @@ pub mod cdp_watchdog;
 pub mod module_loader;
 pub mod runtime;
 pub mod ops;
+pub mod telemetry;
 pub mod v8_flags;
 pub mod v8_lock;
 pub mod markdown;
