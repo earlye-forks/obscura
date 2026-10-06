@@ -640,7 +640,7 @@ impl Resolve for SsrfGuardResolver {
     }
 }
 
-pub(crate) fn validate_url(
+pub fn validate_url(
     url: &Url,
     allow_private_network: bool,
     allow_file_access: bool,
