@@ -514,15 +514,15 @@ pub async fn start_with_serve_options_limit_and_ready_file(
     // gets an isolated copy with its own cookie jar and HTTP client (#449),
     // while the thread-per-connection layout from #430 still confines that
     // connection's V8 isolates to one OS thread.
-    let mut bctx = obscura_browser::BrowserContext::with_storage_and_network(
+    let bctx = obscura_browser::BrowserContext::with_storage_and_security(
         "default".to_string(),
         proxy,
         stealth,
         user_agent,
         storage_dir,
         allow_private_network,
+        allow_file_access,
     );
-    bctx.allow_file_access = allow_file_access;
     let shared_ctx = Arc::new(bctx);
     // Persistence is deliberately separate from the connection template.
     // Cookie deltas are merged here, but new connections always clone the

@@ -214,15 +214,15 @@ impl CdpContext {
         allow_file_access: bool,
         allow_private_network: bool,
     ) -> Self {
-        let mut ctx = BrowserContext::with_storage_and_network(
+        let ctx = BrowserContext::with_storage_and_security(
             "default".to_string(),
             proxy,
             stealth,
             user_agent,
             storage_dir,
             allow_private_network,
+            allow_file_access,
         );
-        ctx.allow_file_access = allow_file_access;
         Self::new_with_shared_context(Arc::new(ctx))
     }
 

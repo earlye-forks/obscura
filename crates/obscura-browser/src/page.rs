@@ -1083,10 +1083,11 @@ impl Page {
             // http://, which only works when the upstream happens to be a
             // Clash-style mixed-mode proxy and breaks plain SOCKS5 servers
             // like `ssh -ND` (#160).
-            Some(Arc::new(StealthHttpClient::with_proxy(
+            Some(Arc::new(StealthHttpClient::with_security_options(
                 context.cookie_jar.clone(),
                 context.proxy_url.as_deref(),
                 context.allow_private_network,
+                context.allow_file_access,
             )))
         } else {
             None
@@ -5270,16 +5271,15 @@ mod tests {
     }
 
     fn file_gate_context(name: &str, allow_file_access: bool) -> std::sync::Arc<crate::BrowserContext> {
-        let mut context = crate::BrowserContext::with_storage_and_network(
+        std::sync::Arc::new(crate::BrowserContext::with_storage_and_security(
             name.to_string(),
             None,
             false,
             None,
             None,
             true,
-        );
-        context.allow_file_access = allow_file_access;
-        std::sync::Arc::new(context)
+            allow_file_access,
+        ))
     }
 
     // file:// is a local file read, so a browser context must opt in before any
@@ -10162,6 +10162,76 @@ mod tests {
             "*://*.gstatic.com/*.woff2",
             "https://fonts.gstatic.com/s/inter/v18/font.woff",
         ));
+    }
+
+    // feature-001: file:// access is enforced by the network layer itself, not
+    // only by `Page` navigation and the CDP handlers. A page's own
+    // `location.href` assignment queues a pending navigation that is drained by
+    // `process_pending_navigation`, a path no CDP command touches; with the
+    // default context it must not load the file, and the context's http client
+    // (shared by redirects, subresources and scripted fetches) must refuse it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn page_triggered_navigation_to_file_url_is_blocked_by_default() {
+        let (path, file_url) = local_html_fixture("default-pending");
+        let context = file_gate_context("file-gate-default", false);
+        let mut page = super::Page::new("file-gate-default".to_string(), context.clone());
+        page.navigate("data:text/html,<p>web</p>").await.expect("web page");
+        let web_url = page.url_string();
+
+        page.evaluate(&format!(
+            "location.href = {}",
+            serde_json::to_string(&file_url).expect("json string")
+        ));
+        assert!(page.has_pending_navigation(), "the page queued a navigation");
+        let navigated = page.process_pending_navigation().await;
+        assert!(
+            !matches!(navigated, Ok(true)),
+            "page-triggered navigation to file:// must not load when allow_file_access is disabled"
+        );
+        assert_eq!(page.url_string(), web_url);
+
+        let parsed = url::Url::parse(&file_url).expect("file url");
+        let error = context
+            .http_client
+            .fetch(&parsed)
+            .await
+            .expect_err("the network layer must refuse file:// by default");
+        assert!(error.to_string().contains("file://"), "{error}");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // The opt-in still works end to end: a local document in a context built
+    // with file access can follow its own `location.href` to another local
+    // file through the pending-navigation path.
+    #[tokio::test(flavor = "current_thread")]
+    async fn page_triggered_navigation_to_file_url_succeeds_when_allowed() {
+        let (first_path, first_url) = local_html_fixture("allowed-first");
+        let second_path = std::env::temp_dir().join(format!(
+            "obscura-file-gate-allowed-second-{}.html",
+            std::process::id()
+        ));
+        std::fs::write(&second_path, "<p id=next>next</p>").expect("write fixture");
+        let second_url = url::Url::from_file_path(&second_path).expect("file url").to_string();
+
+        let context = file_gate_context("file-gate-allowed", true);
+        assert!(context.http_client.allow_file_access);
+        let mut page = super::Page::new("file-gate-allowed".to_string(), context);
+        page.navigate(&first_url).await.expect("an opted-in context reads local files");
+
+        page.evaluate(&format!(
+            "location.href = {}",
+            serde_json::to_string(&second_url).expect("json string")
+        ));
+        let navigated = page
+            .process_pending_navigation()
+            .await
+            .expect("page-triggered file:// navigation must succeed when allowed");
+        assert!(navigated, "expected the pending navigation to be processed");
+        assert_eq!(page.url_string(), second_url);
+
+        let _ = std::fs::remove_file(&first_path);
+        let _ = std::fs::remove_file(&second_path);
     }
 }
 
