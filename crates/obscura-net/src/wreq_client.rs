@@ -544,6 +544,11 @@ impl StealthHttpClient {
         store_cookies: bool,
         max_body_bytes: usize,
     ) -> Result<StealthResponseHeaders, ObscuraNetError> {
+        // Enforce the SSRF policy at the transport too, not only in the
+        // caller's `validate_fetch_url`: the DNS resolver never sees a literal
+        // IP, so this is what stops a direct call to 127.0.0.1 or 10.0.0.1.
+        // Scripted requests never read file://, hence `false`.
+        validate_url(url, self.allow_private_network, false)?;
         if is_tracker_blocked(url, self.block_trackers) {
             tracing::debug!("Blocked tracker: {}", url);
             return Ok(StealthResponseHeaders {
@@ -940,6 +945,66 @@ mod tests {
             .fetch(&url)
             .await
             .expect("loopback hostname must be reachable with the opt-in");
+        assert_eq!(resp.status, 200);
+    }
+
+    #[tokio::test]
+    async fn stealth_navigation_blocks_private_literal_ips_by_default() {
+        let port = gzip_fixture().await;
+        let loopback = format!("http://127.0.0.1:{port}/");
+        let client = StealthHttpClient::new(Arc::new(CookieJar::new()));
+        for target in [
+            loopback.as_str(),
+            "http://[::1]:9/",
+            "http://10.0.0.1/",
+            "http://192.168.1.1/",
+            "http://169.254.169.254/latest/meta-data/",
+        ] {
+            let url = Url::parse(target).unwrap();
+            assert!(
+                client.fetch(&url).await.is_err(),
+                "{target} must be rejected by default"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn stealth_navigation_blocks_hostname_resolving_to_loopback_by_default() {
+        // localtest.me resolves to 127.0.0.1, so only the resolver installed
+        // on the wreq client can catch it. Without DNS the lookup errors too.
+        let client = StealthHttpClient::new(Arc::new(CookieJar::new()));
+        let url = Url::parse("http://localtest.me:9/").unwrap();
+        assert!(
+            client.fetch(&url).await.is_err(),
+            "hostname resolving to loopback must be rejected by default"
+        );
+    }
+
+    #[tokio::test]
+    async fn stealth_scripted_request_blocks_loopback_literal_ip_by_default() {
+        // A live fixture, so only the SSRF check can make this fail.
+        let port = gzip_fixture().await;
+        let client = StealthHttpClient::new(Arc::new(CookieJar::new()));
+        let url = Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap();
+        let result = client
+            .send_single("GET", &url, &std::collections::HashMap::new(), &[], false, false)
+            .await;
+        assert!(
+            result.is_err(),
+            "scripted request to loopback must be rejected by default"
+        );
+    }
+
+    #[tokio::test]
+    async fn stealth_navigation_allows_loopback_literal_ip_with_opt_in() {
+        let port = gzip_fixture().await;
+        let client = StealthHttpClient::with_proxy(Arc::new(CookieJar::new()), None, true);
+        let url = Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap();
+
+        let resp = client
+            .fetch(&url)
+            .await
+            .expect("loopback literal IP must be reachable with the opt-in");
         assert_eq!(resp.status, 200);
     }
 }
