@@ -30,3 +30,8 @@ pub use page::Page;
 // Request/response interception types (issue #306).
 pub use obscura_browser::{InterceptedRequest, InterceptResolution};
 pub use obscura_net::{RequestCallback, RequestInfo, ResourceType, Response, ResponseCallback};
+
+// Global DOM-mutation telemetry stream (feature-011): a companion automation
+// process subscribes once and drains it from a background thread/task,
+// independent of any particular `Page`.
+pub use obscura_browser::{subscribe_dom_changes, TelemetryDomEvent};
