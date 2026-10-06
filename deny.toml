@@ -2,6 +2,7 @@
 # Run: cargo deny --all-features check --config deny.toml advisories bans licenses sources
 
 [advisories]
+yanked = "deny"
 # Real vulnerabilities fail the build. The advisories below are *unmaintained*
 # notices for transitive crates with no available fix; they are explicitly
 # accepted until the upstream parents drop them.
