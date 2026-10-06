@@ -34,7 +34,7 @@ async fn main() -> anyhow::Result<()> {
     println!("HTML bytes: {}", page.content().len());
 
     let el = page.wait_for_selector("h1", Duration::from_secs(5)).await?;
-    println!("Heading: {}", el.text());
+    println!("Heading: {}", el.text()?);
 
     let title = page.evaluate("document.title");
     println!("Title: {}", title);
