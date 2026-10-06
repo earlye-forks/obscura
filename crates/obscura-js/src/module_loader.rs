@@ -267,6 +267,16 @@ impl ModuleLoader for ObscuraModuleLoader {
                 Ok((client, stealth, callbacks)) => {
                     let requested = ModuleSpecifier::parse(&url)
                         .map_err(|e| io_err(format!("Invalid module URL {}: {}", url, e)))?;
+                    // The fetch below validates again inside the transport, but
+                    // the SSRF gate must not depend on that: the resolver hook on
+                    // the client is never consulted for a literal IP host, so a
+                    // module URL is checked here before it reaches any client.
+                    obscura_net::validate_url(
+                        &requested,
+                        client.allow_private_network,
+                        client.allow_file_access,
+                    )
+                    .map_err(|e| io_err(format!("Module {} blocked: {}", url, e)))?;
                     let request =
                         obscura_net::ResourceRequest::module_script(&document_url, &referrer);
                     #[cfg(feature = "stealth")]
@@ -327,5 +337,61 @@ impl ModuleLoader for ObscuraModuleLoader {
                 Err(error) => Err(io_err(error)),
             }
         })))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Regression test for the SSRF bypass via dynamic `import()` /
+    // `<script type="module">`: the module loader used to fetch module
+    // source directly with no URL validation, relying solely on the shared
+    // client's SsrfGuardResolver — which never fires for a literal IP host
+    // (hyper-util skips DNS resolution entirely when the host already parses
+    // as an IP). `load()` must reject loopback/link-local URLs itself,
+    // before any request is attempted.
+    async fn assert_blocked(url: &str) {
+        let loader = ObscuraModuleLoader::new("https://example.com/");
+        let specifier = ModuleSpecifier::parse(url).unwrap();
+        let response = loader.load(
+            &specifier,
+            None,
+            ModuleLoadOptions {
+                is_dynamic_import: true,
+                is_synchronous: false,
+                requested_module_type: deno_core::RequestedModuleType::None,
+            },
+        );
+        let ModuleLoadResponse::Async(fut) = response else {
+            panic!("expected an async module load response");
+        };
+        let result = fut.await;
+        let err = result.expect_err(&format!(
+            "module import of {} must be rejected as SSRF, not fetched",
+            url
+        ));
+        let msg = err.to_string();
+        assert!(
+            msg.contains("blocked") || msg.contains("not allowed"),
+            "expected an SSRF-validation error for {}, got: {}",
+            url,
+            msg
+        );
+    }
+
+    #[tokio::test]
+    async fn dynamic_import_from_loopback_is_blocked() {
+        assert_blocked("http://127.0.0.1:6379/").await;
+    }
+
+    #[tokio::test]
+    async fn dynamic_import_from_link_local_metadata_is_blocked() {
+        assert_blocked("http://169.254.169.254/latest/meta-data/iam/security-credentials/").await;
+    }
+
+    #[tokio::test]
+    async fn dynamic_import_from_ipv6_loopback_is_blocked() {
+        assert_blocked("http://[::1]:6379/").await;
     }
 }
