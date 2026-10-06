@@ -187,6 +187,9 @@ async fn send_get_with_connection_reset_retry(
 pub struct StealthHttpClient {
     client: wreq::Client,
     allow_private_network: bool,
+    /// Mirrors `ObscuraHttpClient::allow_file_access`: `validate_url` rejects
+    /// file:// unless the owning context opted in (feature-001).
+    allow_file_access: bool,
     pub block_trackers: bool,
     pub cookie_jar: Arc<CookieJar>,
     pub extra_headers: RwLock<HashMap<String, String>>,
@@ -211,6 +214,17 @@ impl StealthHttpClient {
         cookie_jar: Arc<CookieJar>,
         proxy_url: Option<&str>,
         allow_private_network: bool,
+    ) -> Self {
+        Self::with_security_options(cookie_jar, proxy_url, allow_private_network, false)
+    }
+
+    /// Like `with_proxy`, also threading the context's `allow_file_access`
+    /// opt-in through to `validate_url` (feature-001).
+    pub fn with_security_options(
+        cookie_jar: Arc<CookieJar>,
+        proxy_url: Option<&str>,
+        allow_private_network: bool,
+        allow_file_access: bool,
     ) -> Self {
         let emulation_opts = wreq_util::Emulation::builder()
             .profile(wreq_util::Profile::Chrome145)
@@ -280,6 +294,7 @@ impl StealthHttpClient {
         StealthHttpClient {
             client,
             allow_private_network,
+            allow_file_access,
             block_trackers: tracker_blocking_enabled(
                 std::env::var("OBSCURA_BLOCK_TRACKERS").ok().as_deref(),
             ),
@@ -317,7 +332,7 @@ impl StealthHttpClient {
         request: ResourceRequest,
         callbacks: Option<&CallbackRegistry>,
     ) -> Result<Response, ObscuraNetError> {
-        validate_url(url, self.allow_private_network)?;
+        validate_url(url, self.allow_private_network, self.allow_file_access)?;
         validate_request_mode(&request, url)?;
         if url.scheme() == "file" {
             return fetch_file_url(url, request.max_response_bytes).await;
@@ -445,7 +460,7 @@ impl StealthHttpClient {
                     let next_url = current_url.join(location_str).map_err(|e| {
                         ObscuraNetError::Network(format!("Invalid redirect URL: {}", e))
                     })?;
-                    validate_url(&next_url, self.allow_private_network)?;
+                    validate_url(&next_url, self.allow_private_network, self.allow_file_access)?;
                     validate_request_mode(&request, &next_url)?;
                     redirect_tainted |=
                         redirect_taints_origin(&request, &current_url, &next_url);
@@ -824,6 +839,7 @@ mod tests {
         let client = StealthHttpClient {
             client: wreq::Client::builder().no_proxy().build().unwrap(),
             allow_private_network: true,
+            allow_file_access: false,
             block_trackers: true,
             cookie_jar: Arc::new(CookieJar::new()),
             extra_headers: tokio::sync::RwLock::new(std::collections::HashMap::new()),

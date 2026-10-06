@@ -915,19 +915,20 @@ async fn run_fetch(
         return Ok(());
     }
 
-    let mut context = BrowserContext::with_storage_and_network(
+    // The browser and network layers refuse file:// unless the context opts
+    // in. A local user running `obscura fetch file://...` on their own files
+    // is the intended case; only network-facing servers (serve, mcp) keep it
+    // off. Pass it at construction so the http client sees it too.
+    let mut context = BrowserContext::with_storage_and_security(
         "fetch".to_string(),
         proxy,
         stealth,
         user_agent.clone(),
         storage_dir.clone(),
         allow_private_network,
+        true,
     );
     context.obey_robots = obey_robots;
-    // The browser layer refuses file:// unless the context opts in. A local
-    // user running `obscura fetch file://...` on their own files is the
-    // intended case; only network-facing servers (serve, mcp) keep it off.
-    context.allow_file_access = true;
     let context = Arc::new(context);
     let mut page = Page::new("fetch-page".to_string(), context.clone());
     // Keep the browser's end-to-end navigation ceiling aligned with the CLI
@@ -1311,7 +1312,7 @@ async fn fetch_original_response(
     if stealth && url.scheme() != "file" {
         #[cfg(feature = "stealth")]
         {
-            // `false` matches the reqwest path below (`with_options`); the
+            // `false` matches the reqwest path below; the
             // CLI mirrors --allow-private-network into
             // OBSCURA_ALLOW_PRIVATE_NETWORK at startup, which this client
             // honours.
@@ -1328,9 +1329,13 @@ async fn fetch_original_response(
         }
     }
 
-    let client = obscura_net::ObscuraHttpClient::with_options(
+    // This is the CLI operator's own direct fetch target, not a
+    // page-triggered navigation, so file:// stays allowed (see run_fetch).
+    let client = obscura_net::ObscuraHttpClient::with_security_options(
         Arc::new(obscura_net::CookieJar::new()),
         proxy.as_deref(),
+        false,
+        true,
     );
     if let Some(ua) = user_agent {
         client.set_user_agent(&ua).await;
