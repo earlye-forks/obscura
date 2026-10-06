@@ -43,7 +43,7 @@ async fn attribute_reads_ordinary_names() {
 
     let el = page.query_selector("#x").expect("element #x should be found");
     assert_eq!(
-        el.attribute("data-safe").as_deref(),
+        el.attribute("data-safe").unwrap().as_deref(),
         Some("ok"),
         "escaping must not break reading a normal attribute name"
     );

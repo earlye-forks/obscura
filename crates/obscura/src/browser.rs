@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -57,7 +58,7 @@ impl Browser {
             self.context.clone(),
         );
         Ok(Page {
-            inner: RefCell::new(page),
+            inner: Rc::new(RefCell::new(page)),
         })
     }
 
