@@ -12,6 +12,7 @@ use deno_core::op2;
 use deno_core::v8;
 use obscura_dom::tree::{AttachShadowError, ShadowRootMode};
 use obscura_dom::{DomTree, NodeData, NodeId};
+use crate::telemetry::{emit_dom_event, TelemetryDomEvent};
 #[cfg(feature = "stealth")]
 use obscura_net::StealthHttpClient;
 use obscura_net::{
@@ -2477,6 +2478,7 @@ fn op_dom_inner(shared: SharedState, cmd: String, arg1: String, arg2: String) ->
                 } else {
                     dom.with_node_mut(node_id, |n| n.set_attribute(name, value.to_string()));
                 }
+                emit_dom_event(TelemetryDomEvent::AttributeChanged { node_id: nid, name: name.to_string() });
             }
             "true".into()
         }
@@ -2503,7 +2505,14 @@ fn op_dom_inner(shared: SharedState, cmd: String, arg1: String, arg2: String) ->
             let parent = NodeId::new(parent);
             let child = NodeId::new(child);
             dom.append_child(parent, child);
-            (dom.get_node(child).and_then(|node| node.parent) == Some(parent)).to_string()
+            let inserted = dom.get_node(child).and_then(|node| node.parent) == Some(parent);
+            if inserted {
+                emit_dom_event(TelemetryDomEvent::NodeInserted {
+                    node_id: child.index() as u32,
+                    parent_id: parent.index() as u32,
+                });
+            }
+            inserted.to_string()
         }
         "remove_child" => {
             let child = match arg1.parse::<u32>() {
@@ -2515,11 +2524,14 @@ fn op_dom_inner(shared: SharedState, cmd: String, arg1: String, arg2: String) ->
                 .get_node(child)
                 .is_some_and(|node| node.parent.is_some());
             dom.remove_child(child);
-            (had_parent
+            let removed = had_parent
                 && dom
                     .get_node(child)
-                    .is_some_and(|node| node.parent.is_none()))
-            .to_string()
+                    .is_some_and(|node| node.parent.is_none());
+            if removed {
+                emit_dom_event(TelemetryDomEvent::NodeRemoved { node_id: child.index() as u32 });
+            }
+            removed.to_string()
         }
         "insert_before" => {
             let new_node = match arg1.parse::<u32>() {
@@ -2534,9 +2546,15 @@ fn op_dom_inner(shared: SharedState, cmd: String, arg1: String, arg2: String) ->
             let new_node = NodeId::new(new_node);
             let expected_parent = dom.get_node(ref_node).and_then(|node| node.parent);
             dom.insert_before(ref_node, new_node);
-            (expected_parent.is_some()
-                && dom.get_node(new_node).and_then(|node| node.parent) == expected_parent)
-                .to_string()
+            let inserted = expected_parent.is_some()
+                && dom.get_node(new_node).and_then(|node| node.parent) == expected_parent;
+            if let (true, Some(parent)) = (inserted, expected_parent) {
+                emit_dom_event(TelemetryDomEvent::NodeInserted {
+                    node_id: new_node.index() as u32,
+                    parent_id: parent.index() as u32,
+                });
+            }
+            inserted.to_string()
         }
         "remove_attribute" => {
             let nid = arg1.parse::<u32>().unwrap_or(0);
@@ -2558,6 +2576,7 @@ fn op_dom_inner(shared: SharedState, cmd: String, arg1: String, arg2: String) ->
             if arg2 == "id" {
                 dom.update_id_index(node_id, old_id.as_deref(), None);
             }
+            emit_dom_event(TelemetryDomEvent::AttributeChanged { node_id: nid, name: arg2.clone() });
             "true".into()
         }
         // Namespace-aware attribute ops. arg2 packs the pieces with a NUL:
@@ -2598,6 +2617,7 @@ fn op_dom_inner(shared: SharedState, cmd: String, arg1: String, arg2: String) ->
                         n.set_attribute_ns(ns, qualified, value.to_string())
                     });
                 }
+                emit_dom_event(TelemetryDomEvent::AttributeChanged { node_id: nid, name: qualified.to_string() });
             }
             "true".into()
         }
@@ -2614,6 +2634,7 @@ fn op_dom_inner(shared: SharedState, cmd: String, arg1: String, arg2: String) ->
             } else {
                 dom.with_node_mut(node_id, |n| n.remove_attribute_ns(ns, local));
             }
+            emit_dom_event(TelemetryDomEvent::AttributeChanged { node_id: nid, name: local.to_string() });
             "true".into()
         }
         "set_inner_html" => {
